@@ -69,8 +69,8 @@ number pps =
   let noones = [ (p, pow) |  (p, pow) <- pps, pow /= 0]
       collectpow p = sum [pow | (p', pow) <- pps, p == p']
       uniqprimes = L.nub [p | (p, _) <- noones]
-      iszero = any (\(p, _) -> p == Zero) pps
-  in if iszero
+      haszero = any (\(p, _) -> p == Zero) pps
+  in if haszero
       then zero
       else Number [(p, collectpow p) | p <- uniqprimes]
 
@@ -140,8 +140,12 @@ instance Exprable Expr where
 ($) :: Exprable  a => FnName -> a -> Expr
 f $ a = ExprUninterpretedFn f (toExpr a)
 
+-- | Convention: keep numbers to the left
 (+) :: (Exprable a, Exprable b) => a -> b -> Expr
-a + b = ExprAdd (toExpr a) (toExpr b)
+a + b = case (toExpr a, toExpr b) of
+             (ExprNum na, b) -> if iszero na then b else ExprAdd (ExprNum na) b
+             (a, ExprNum nb) -> if iszero nb then a else ExprAdd (ExprNum nb) a
+             (a, b) -> ExprAdd a b
 
 (-) :: (Exprable a, Exprable b) => a -> b -> Expr
 a - b = ExprSub (toExpr a) (toExpr b)
@@ -173,9 +177,12 @@ instance Show Expr where
 isone :: Number -> Bool
 isone (Number ps) = case number ps of Number [] -> True; _ -> False
 
+iszero :: Number -> Bool
+iszero (Number ps) = case number ps of Number [(Zero, 1)] -> True; _ -> False
+
 sumExprs :: [Expr] -> Expr
 sumExprs [e] = e
-sumExprs (e:es) = ExprAdd e (sumExprs es)
+sumExprs (e:es) = e + (sumExprs es)
 
 -- | an arithmetic function
 type ArithFn = Number -> Expr
@@ -187,8 +194,7 @@ dirchletInv f (toExpr -> e) = undefined
 
 -- I (i) = 1 if i == 1, 0 otherwise
 identity :: ArithFn
-identity one = ExprNum one
-identity _ = ExprNum zero
+identity n = if isone n then ExprNum one else ExprNum zero
 
 -- n(i) = i
 n :: ArithFn
