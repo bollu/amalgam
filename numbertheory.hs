@@ -14,10 +14,12 @@ import qualified Data.List as L
 
 
 -- symbolic prime
-data Prime = SymPrime String deriving(Eq, Ord)
+data Prime = SymPrime String | Zero deriving(Eq, Ord)
+
 
 instance Show Prime where
   show (SymPrime p) = p
+  show Zero = "0"
 
 p, q, r :: Prime
 p = SymPrime "p"
@@ -54,6 +56,9 @@ data Number = Number [PrimePow] deriving(Eq)
 one :: Number
 one = Number []
 
+zero :: Number
+zero = Number [(Zero, 1)]
+
 instance Show Number where
   show (Number []) = show 1
   show (Number ps) = mconcat (map showPrimePow ps)
@@ -64,7 +69,10 @@ number pps =
   let noones = [ (p, pow) |  (p, pow) <- pps, pow /= 0]
       collectpow p = sum [pow | (p', pow) <- pps, p == p']
       uniqprimes = L.nub [p | (p, _) <- noones]
-  in Number [(p, collectpow p) | p <- uniqprimes]
+      iszero = any (\(p, _) -> p == Zero) pps
+  in if iszero
+      then zero
+      else Number [(p, collectpow p) | p <- uniqprimes]
 
 -- infixl 5 *
 -- (*) :: (Numberable a, Numberable b) => a -> b -> Number
@@ -176,6 +184,15 @@ type ArithFn = Number -> Expr
 -- | compute the dirichlet inverse of the given FnName applied on a number
 dirchletInv :: ArithFn -> ArithFn
 dirchletInv f (toExpr -> e) = undefined
+
+-- I (i) = 1 if i == 1, 0 otherwise
+identity :: ArithFn
+identity one = ExprNum one
+identity _ = ExprNum zero
+
+-- n(i) = i
+n :: ArithFn
+n i = ExprNum i
 
 -- | compute the dirichlet convolution of a function against another
 dirchletConv :: ArithFn -> ArithFn -> ArithFn
