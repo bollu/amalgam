@@ -37,6 +37,13 @@ multerm_ (Term t1) (Term t2) =
     (\f a b -> if a + b == 0 then Nothing else Just (a + b)) -- both
     id id t1 t2) |> term_
 
+-- | reciprocal
+recipterm :: Term -> Term 
+recipterm (Term t) = M.map negate t |> Term
+
+divterm_ :: Term -> Term -> Term
+divterm_ a b = a `multerm_` recipterm b
+
 instance Num Term where
   fromInteger i = fromInteger i |> Number |> toTerm
   (*) = multerm_
@@ -52,6 +59,7 @@ instance Show Term where
         ds = M.filter (< 0) t
         -- | show a power of a factor. Normalize powers since we are showing
         -- denominator using / (...)
+        showfac (Number n) p = show n <> "^" <> show (abs n) <> " " 
         showfac f (abs -> 1) = show f
         showfac f n = show f <> "^" <> show (abs n)
         -- | numerator & denominator 
@@ -65,19 +73,18 @@ instance Show Expr where
 -- | construct and normalize a term
 term_ :: M.Map Factor Int -> Term
 term_ t = 
-  let numbers = M.filterWithKey (\f _ -> case f of Number _ -> True; _ -> False) t
-      nonumbers = M.filterWithKey (\f _ -> case f of Number _ -> False; _ -> True) t
-      nopowzero = M.filter (/= 0) nonumbers
-      (Product numprod) = M.foldMapWithKey (\(Number n) pow -> Product (n ^ pow)) numbers
-  in nopowzero |> M.insert (Number numprod) 1 |> Term
+  let nopowzero = M.filter (/= 0) t
+  in nopowzero |> Term
 
 term :: Termable a => a -> Term
 term (toTerm -> t) = case t of Term f2pow -> term_ f2pow
 
+number2term :: Int -> Term
+number2term i = M.singleton (Number i) 1 |> Term
 
 -- | Return if the term is a constannt number
-termnumber_ :: Term -> Maybe Int
-termnumber_ (Term t) = 
+term2number_ :: Term -> Maybe Int
+term2number_ (Term t) = 
   let (Term t') = term_ t 
       nums = M.filterWithKey (\f _ -> case f of Number _ -> True; _ -> False) t'
       nonums = M.filterWithKey (\f _ -> case f of Number _ -> False; _ -> True) t
@@ -89,7 +96,7 @@ termnumber_ (Term t) =
                  xs -> error "normalized term cannot have more than one number"
 
 iszero_ :: Term -> Bool
-iszero_ t = termnumber_ t == Just 0
+iszero_ t = term2number_ t == Just 0
 
 iszero :: Termable a => a -> Bool
 iszero a = a |> toTerm |> iszero_
@@ -158,7 +165,7 @@ narith = id
 
 -- | we need floor to define this
 idarith :: ArithFn
-idarith t = if termnumber_ t == Just 1 then toTerm one else toTerm zero
+idarith t = if term2number_ t == Just 1 then toTerm one else toTerm zero
 
 f,g :: ArithFn
 f t = SymFn "f" t |> term
@@ -169,6 +176,13 @@ p = SymPrime "p" |> term
 q = SymPrime "q" |> term
 r = SymPrime "r" |> term
 
+
+-- | compute the symbolic dirichlet inverse of an arithmetic function
+dinv :: ArithFn -> Term -> Expr
+dinv f 1 = recipterm (f 1) |> toExpr
+dinv f n = sum [((number2term (-1)) `divterm_` (f (n `divterm_` d)) |> toExpr) * (dinv f d) | d <- S.toList (divisors n), d /= n]
+
 main :: IO ()
 main = do
-  print "dirichlet convolution of pq"
+  print "dirichlet inverse of f wrt p"
+  print (dinv f 1)
