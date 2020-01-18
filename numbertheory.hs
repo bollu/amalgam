@@ -24,10 +24,10 @@ infixl 0 |>
 type FnName = String
 
 -- | factors contain symbolic primes, regular numbers, and uninterpreted functions.
-data Factor = Number Int | SymPrime String | SymFn FnName Expr deriving(Eq, Ord)
+data Factor = Number Int | SymPrime String | SymFn FnName Term deriving(Eq, Ord)
 -- | terms are products of factors of different powers
 data Term = Term (M.Map Factor Int) deriving(Eq, Ord)
--- | Expressions are sums of terms
+-- | Expressions are expressions involving  terms
 data Expr = Expr [Term] deriving (Eq, Ord)
 
 -- | take the product of two terms.
@@ -44,7 +44,7 @@ instance Num Term where
 instance Show Factor where
   show (SymPrime n) = n
   show (Number i ) = show i
-  show (SymFn n e) = n <> "(" <> show e <> ")"
+  show (SymFn n x) = n <> "(" <> show x <> ")"
 
 instance Show Term where
   show (Term t) = 
@@ -62,7 +62,6 @@ instance Show Term where
 instance Show Expr where
  show (Expr ts) = L.intercalate "+" (map show ts)
 
-
 -- | construct and normalize a term
 term_ :: M.Map Factor Int -> Term
 term_ t = 
@@ -76,6 +75,26 @@ term :: Termable a => a -> Term
 term (toTerm -> t) = case t of Term f2pow -> term_ f2pow
 
 
+-- | Return if the term is a constannt number
+termnumber_ :: Term -> Maybe Int
+termnumber_ (Term t) = 
+  let (Term t') = term_ t 
+      nums = M.filterWithKey (\f _ -> case f of Number _ -> True; _ -> False) t'
+      nonums = M.filterWithKey (\f _ -> case f of Number _ -> False; _ -> True) t
+  in case M.null nonums of
+       False -> Nothing
+       True -> case M.keys nums of
+                 [] -> Just 1
+                 [Number n] -> Just n
+                 xs -> error "normalized term cannot have more than one number"
+
+iszero_ :: Term -> Bool
+iszero_ t = termnumber_ t == Just 0
+
+iszero :: Termable a => a -> Bool
+iszero a = a |> toTerm |> iszero_
+
+
 -- | return all possible divisors of a term.
 divisors_ :: Term -> S.Set Term
 divisors_ (Term f2pow) = 
@@ -84,11 +103,11 @@ divisors_ (Term f2pow) =
 divisors :: Exprable a => a -> S.Set Term
 divisors (toExpr -> e) = toTerm e |> divisors_
 
-one_ :: Factor
-one_ = Number 1
+one :: Factor
+one = Number 1
 
-one :: Expr
-one = toExpr one_
+zero :: Factor
+zero = Number 0
 
 class Termable a where
   toTerm :: a -> Term
@@ -130,3 +149,26 @@ instance Num Expr where
   (+) = expradd
   (-) = exprsub
   (*) = exprmul
+
+-- arithmetic function: takes terms and returns terms
+type ArithFn = Term -> Term
+
+narith :: ArithFn
+narith = id
+
+-- | we need floor to define this
+idarith :: ArithFn
+idarith t = if termnumber_ t == Just 1 then toTerm one else toTerm zero
+
+f,g :: ArithFn
+f t = SymFn "f" t |> term
+g t = SymFn "g" t |> term
+
+p, q, r :: Term
+p = SymPrime "p" |> term
+q = SymPrime "q" |> term
+r = SymPrime "r" |> term
+
+main :: IO ()
+main = do
+  print "dirichlet convolution of pq"
