@@ -13,9 +13,11 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import qualified Data.List as L
 import Control.Applicative
+import Control.Monad
 import Data.Foldable
 import Data.Traversable
 import Data.Monoid
+import Data.Ratio
 
 infixl 0 |>
 (|>) :: x -> (x -> y) -> y
@@ -23,77 +25,76 @@ infixl 0 |>
 
 type FnName = String
 
+-- | Rational number
+type QQ = Ratio Int
+
 -- | factors contain symbolic primes, regular numbers, and uninterpreted functions.
-data Factor = Number Int | SymPrime String | SymFn FnName Term deriving(Eq, Ord)
+data Factor = SymPrime String | SymFn FnName Term deriving(Eq, Ord)
 -- | terms are products of factors of different powers
-data Term = Term (M.Map Factor Int) deriving(Eq, Ord)
--- | Expressions are expressions involving  terms
-data Expr = Expr [Term] deriving (Eq, Ord)
+data Term = Term QQ (M.Map Factor Int) deriving(Eq, Ord)
 
 -- | take the product of two terms.
 multerm_ :: Term -> Term -> Term
-multerm_ (Term t1) (Term t2) =
+multerm_ (Term q1 t1) (Term q2 t2) =
   (M.mergeWithKey 
     (\f a b -> if a + b == 0 then Nothing else Just (a + b)) -- both
-    id id t1 t2) |> term_
+    id id t1 t2) |> term_ (q1 * q2)
 
 -- | reciprocal
 recipterm :: Term -> Term 
-recipterm (Term t) = M.map negate t |> Term
+recipterm (Term q t) = M.map negate t |> Term (recip q)
 
 divterm_ :: Term -> Term -> Term
 divterm_ a b = a `multerm_` recipterm b
 
 instance Num Term where
-  fromInteger i = fromInteger i |> Number |> toTerm
+  fromInteger i = Term (fromInteger i) M.empty
   (*) = multerm_
 
 instance Show Factor where
   show (SymPrime n) = n
-  show (Number i ) = show i
-  show (SymFn n x) = n <> "(" <> show x <> ")"
+  show (SymFn n x) = n <> show x 
 
 instance Show Term where
-  show (Term t) = 
+  show (Term q t) = 
     let ns = M.filter (>= 0) t
         ds = M.filter (< 0) t
         -- | show a power of a factor. Normalize powers since we are showing
         -- denominator using / (...)
-        showfac (Number n) p = show n <> "^" <> show (abs n) <> " " 
         showfac f (abs -> 1) = show f
         showfac f n = show f <> "^" <> show (abs n)
         -- | numerator & denominator 
-        shown = if M.null ns then "1" else (M.foldMapWithKey showfac ns)
-        showd = if M.null ds then [] else "/" <> (M.foldMapWithKey showfac ds) 
-    in  "("  <>  shown <> showd <> ")"
-
-instance Show Expr where
- show (Expr ts) = L.intercalate "+" (map show ts)
+        nstr = (if numerator q /= 1 || (M.null ns) then show (numerator q) else "") <> 
+                M.foldMapWithKey showfac ns
+        dstr = (if denominator q /= 1 then show (denominator q) else "") <> 
+                M.foldMapWithKey showfac ds
+    in  "(" <>  nstr <> (if not (null dstr) then "/" <> dstr <> ")" else ")")
 
 -- | construct and normalize a term
-term_ :: M.Map Factor Int -> Term
-term_ t = 
+term_ :: QQ -> M.Map Factor Int -> Term
+term_ q t = 
   let nopowzero = M.filter (/= 0) t
-  in nopowzero |> Term
+  in if q == 0 then zero else  Term q nopowzero
 
 term :: Termable a => a -> Term
-term (toTerm -> t) = case t of Term f2pow -> term_ f2pow
+term (toTerm -> t) = case t of Term q f2pow -> term_ q f2pow
+
 
 number2term :: Int -> Term
-number2term i = M.singleton (Number i) 1 |> Term
+number2term i = Term (i % 1) M.empty
 
--- | Return if the term is a constannt number
-term2number_ :: Term -> Maybe Int
-term2number_ (Term t) = 
-  let (Term t') = term_ t 
-      nums = M.filterWithKey (\f _ -> case f of Number _ -> True; _ -> False) t'
-      nonums = M.filterWithKey (\f _ -> case f of Number _ -> False; _ -> True) t
-  in case M.null nonums of
-       False -> Nothing
-       True -> case M.keys nums of
-                 [] -> Just 1
-                 [Number n] -> Just n
-                 xs -> error "normalized term cannot have more than one number"
+one :: Term
+one = number2term 1
+
+zero :: Term
+zero = number2term 0
+
+minusone :: Term
+minusone = number2term (-1)
+
+-- | Return if the term is a constant number
+term2number_ :: Term -> Maybe QQ
+term2number_ (Term q t) = if M.null t then Just q else Nothing
 
 iszero_ :: Term -> Bool
 iszero_ t = term2number_ t == Just 0
@@ -104,23 +105,17 @@ iszero a = a |> toTerm |> iszero_
 
 -- | return all possible divisors of a term.
 divisors_ :: Term -> S.Set Term
-divisors_ (Term f2pow) = 
-  f2pow |> M.map (\pow -> [0..pow]) |> sequenceA |> map term_ |> S.fromList
+divisors_ (Term q f2pow) = 
+  f2pow |> M.map (\pow -> [0..pow]) |> sequenceA |> map (term_ q) |> S.fromList
 
 divisors :: Exprable a => a -> S.Set Term
 divisors (toExpr -> e) = toTerm e |> divisors_
-
-one :: Factor
-one = Number 1
-
-zero :: Factor
-zero = Number 0
 
 class Termable a where
   toTerm :: a -> Term
 
 instance Termable Factor where
-  toTerm f = M.singleton f 1 |> Term
+  toTerm f = M.singleton f 1 |> Term 1
 
 instance Termable Term where
   toTerm t = t
@@ -129,6 +124,20 @@ instance Termable Expr where
   toTerm (Expr [t]) = t
   toTerm e = 
     error ("unable to convert expression to term: |" <> show e <> "|")
+
+
+-- | Expressions are expressions involving terms
+data Expr = Expr [Term]
+
+instance Show Expr where
+ show (Expr ts) = L.intercalate "+" (map show ts)
+
+expradd :: Expr -> Expr -> Expr
+expradd (Expr e) (Expr e') = Expr (e <> e')
+
+instance Num Expr where
+  fromInteger i = fromInteger i |> number2term |> toExpr
+  (+) = expradd
 
 class Exprable a where
   toExpr :: a -> Expr
@@ -142,20 +151,6 @@ instance Exprable Term where
 instance Exprable Factor where
   toExpr f = Expr [toTerm f]
 
-expradd :: Expr -> Expr -> Expr
-expradd (Expr e) (Expr e') = Expr (e <> e')
-
-exprsub :: Expr -> Expr -> Expr
-exprsub (Expr e) (Expr e') = Expr (e <> (map (* (-1)) e'))
-
-exprmul :: Expr -> Expr -> Expr
-exprmul (Expr e) (Expr e') = liftA2 multerm_ e e' |> Expr
-
-instance Num Expr where
-  fromInteger i = fromInteger i |> Number |> toExpr
-  (+) = expradd
-  (-) = exprsub
-  (*) = exprmul
 
 -- arithmetic function: takes terms and returns terms
 type ArithFn = Term -> Term
@@ -182,7 +177,25 @@ dinv :: ArithFn -> Term -> Expr
 dinv f 1 = recipterm (f 1) |> toExpr
 dinv f n = sum [((number2term (-1)) `divterm_` (f (n `divterm_` d)) |> toExpr) * (dinv f d) | d <- S.toList (divisors n), d /= n]
 
+
+dinv_ :: (Term -> Term) -> Term -> [Term]
+dinv_ f 1 = [recipterm (f 1)]
+dinv_ f n = do
+  d <- S.toList (divisors n)
+  guard (d /= n)
+  invd <- dinv_ f d
+  ((minusone `divterm_` (f 1)) * (f (n `divterm_` d))) * invd |> return
+
 main :: IO ()
 main = do
-  print "dirichlet inverse of f wrt p"
-  print (dinv f 1)
+  print "dirichlet inverse of f at 1"
+  print (dinv_ f 1)
+
+  print "dirichlet inverse of f at p"
+  print (dinv_ f p)
+
+  print "dirichlet inverse of f at pq"
+  print (dinv_ f (p*q))
+
+  print "dirichlet inverse of f at pqr"
+  print (dinv_ f (p*q*r))
