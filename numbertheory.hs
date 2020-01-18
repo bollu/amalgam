@@ -31,7 +31,7 @@ type QQ = Ratio Int
 -- | factors contain symbolic primes, regular numbers, and uninterpreted functions.
 data Factor = SymPrime String | SymFn FnName Term deriving(Eq, Ord)
 -- | terms are products of factors of different powers
-data Term = Term QQ (M.Map Factor Int) deriving(Eq, Ord)
+data Term = Term { termCoeff :: QQ, termFactors :: M.Map Factor Int } deriving(Eq, Ord)
 
 -- | take the product of two terms.
 multerm_ :: Term -> Term -> Term
@@ -130,7 +130,10 @@ instance Termable Expr where
 data Expr = Expr [Term]
 
 instance Show Expr where
- show (Expr ts) = L.intercalate "+" (map show ts)
+ show (Expr ts) = 
+   -- | smaller coefficients first
+   let ts' = L.sortBy (\t t' -> (termCoeff t' |> abs) `compare` (termCoeff t |> abs)) ts
+   in L.intercalate "+" (map show ts')
 
 expradd :: Expr -> Expr -> Expr
 expradd (Expr e) (Expr e') = Expr (e <> e')
@@ -151,6 +154,18 @@ instance Exprable Term where
 instance Exprable Factor where
   toExpr f = Expr [toTerm f]
 
+-- | create equivalence classes
+equiv :: (a -> a -> Bool) -> [a] -> [[a]]
+equiv _ [] = []
+equiv f (x:as) = let (xs, ys) = L.partition (f x) (x:as) in xs:equiv f ys
+
+normalizeExpr :: Expr -> Expr
+normalizeExpr (Expr ts) = 
+ let equivClasses = equiv (\t t' -> termFactors t == termFactors t') ts
+     sumcoeffs ts = getSum (foldMap (Sum . termCoeff) ts)
+     classfactors ts = termFactors (ts !! 0) -- ^ get representative
+ in Expr [term_ (sumcoeffs ts) (classfactors ts)| ts <- equivClasses]
+
 
 -- arithmetic function: takes terms and returns terms
 type ArithFn = Term -> Term
@@ -166,10 +181,11 @@ f,g :: ArithFn
 f t = SymFn "f" t |> term
 g t = SymFn "g" t |> term
 
-p, q, r :: Term
+p, q, r, s :: Term
 p = SymPrime "p" |> term
 q = SymPrime "q" |> term
 r = SymPrime "r" |> term
+s = SymPrime "s" |> term
 
 
 -- | compute the symbolic dirichlet inverse of an arithmetic function
@@ -196,6 +212,11 @@ main = do
 
   print "dirichlet inverse of f at pq"
   print (dinv_ f (p*q))
+  print (dinv_ f (p*q) |> Expr |> normalizeExpr)
 
   print "dirichlet inverse of f at pqr"
   print (dinv_ f (p*q*r))
+  print (dinv_ f (p*q*r) |> Expr |> normalizeExpr)
+
+  print "dirichlet inverse of f at pqrs"
+  print (dinv_ f (p*q*r*s) |> Expr |> normalizeExpr)
