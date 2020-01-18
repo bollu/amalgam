@@ -53,7 +53,7 @@ instance Num Term where
 
 instance Show Factor where
   show (SymPrime n) = n
-  show (SymFn n x) = n <> show x 
+  show (SymFn n x) = n <> "(" <> show x  <> ")"
 
 instance Show Term where
   show (Term q t) = 
@@ -68,7 +68,7 @@ instance Show Term where
                 M.foldMapWithKey showfac ns
         dstr = (if denominator q /= 1 then show (denominator q) else "") <> 
                 M.foldMapWithKey showfac ds
-    in  "(" <>  nstr <> (if not (null dstr) then "/" <> dstr <> ")" else ")")
+    in  nstr <> (if not (null dstr) then "/" <> dstr else "")
 
 -- | construct and normalize a term
 term_ :: QQ -> M.Map Factor Int -> Term
@@ -133,7 +133,7 @@ instance Show Expr where
  show (Expr ts) = 
    -- | smaller coefficients first
    let ts' = L.sortBy (\t t' -> (termCoeff t' |> abs) `compare` (termCoeff t |> abs)) ts
-   in L.intercalate "+" (map show ts')
+   in L.intercalate " +\n" (map show ts')
 
 expradd :: Expr -> Expr -> Expr
 expradd (Expr e) (Expr e') = Expr (e <> e')
@@ -186,6 +186,7 @@ p = SymPrime "p" |> term
 q = SymPrime "q" |> term
 r = SymPrime "r" |> term
 s = SymPrime "s" |> term
+t = SymPrime "t" |> term
 
 
 -- | compute the symbolic dirichlet inverse of an arithmetic function
@@ -204,19 +205,21 @@ dinv_ f n = do
 
 main :: IO ()
 main = do
-  print "dirichlet inverse of f at 1"
+  putStrLn "dirichlet inverse of f at 1"
   print (dinv_ f 1)
 
-  print "dirichlet inverse of f at p"
+  putStrLn "dirichlet inverse of f at p"
   print (dinv_ f p)
 
-  print "dirichlet inverse of f at pq"
-  print (dinv_ f (p*q))
+  putStrLn "dirichlet inverse of f at pq"
   print (dinv_ f (p*q) |> Expr |> normalizeExpr)
 
-  print "dirichlet inverse of f at pqr"
-  print (dinv_ f (p*q*r))
+  putStrLn "dirichlet inverse of f at pqr"
   print (dinv_ f (p*q*r) |> Expr |> normalizeExpr)
 
-  print "dirichlet inverse of f at pqrs"
+  putStrLn "dirichlet inverse of f at pqrs"
   print (dinv_ f (p*q*r*s) |> Expr |> normalizeExpr)
+
+
+  putStrLn "dirichlet inverse of f at pqrst"
+  print (dinv_ f (p*q*r*s*t) |> Expr |> normalizeExpr)
