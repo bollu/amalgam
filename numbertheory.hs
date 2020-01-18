@@ -7,17 +7,15 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE OverlappingInstances #-}
 {-# LANGUAGE Rank2Types #-}
-import Prelude hiding ((^^), (+), (/), ($))
+{-# LANGUAGE BlockArguments #-}
+import Prelude hiding ((^^), (/), ($))
 import qualified Data.Map as M
 import qualified Data.Set as S
 import qualified Data.List as L
+import Control.Applicative
 import Data.Foldable
 import Data.Traversable
 import Data.Monoid
-
--- | this is stupid, but GHC.Num for some reason exposes sub but not add?
-add :: Num a => a -> a -> a
-add a b = a `subtract` (negate b)
 
 infixl 0 |>
 (|>) :: x -> (x -> y) -> y
@@ -33,11 +31,15 @@ data Term = Term (M.Map Factor Int) deriving(Eq, Ord)
 data Expr = Expr [Term] deriving (Eq, Ord)
 
 -- | take the product of two terms.
-multerm :: Term -> Term -> Term
-multerm (Term t1) (Term t2) =
+multerm_ :: Term -> Term -> Term
+multerm_ (Term t1) (Term t2) =
   (M.mergeWithKey 
-    (\f a b -> if a `add` b == 0 then Nothing else Just (a `add` b)) -- both
-    id id t1 t2) |> Term
+    (\f a b -> if a + b == 0 then Nothing else Just (a + b)) -- both
+    id id t1 t2) |> term_
+
+instance Num Term where
+  fromInteger i = fromInteger i |> Number |> toTerm
+  (*) = multerm_
 
 instance Show Factor where
   show (SymPrime n) = n
@@ -60,13 +62,18 @@ instance Show Term where
 instance Show Expr where
  show (Expr ts) = L.intercalate "+" (map show ts)
 
+
 -- | construct and normalize a term
 term_ :: M.Map Factor Int -> Term
 term_ t = 
   let numbers = M.filterWithKey (\f _ -> case f of Number _ -> True; _ -> False) t
       nonumbers = M.filterWithKey (\f _ -> case f of Number _ -> False; _ -> True) t
+      nopowzero = M.filter (/= 0) nonumbers
       (Product numprod) = M.foldMapWithKey (\(Number n) pow -> Product (n ^ pow)) numbers
-  in nonumbers |> M.insert (Number numprod) 1 |> Term
+  in nopowzero |> M.insert (Number numprod) 1 |> Term
+
+term :: Termable a => a -> Term
+term (toTerm -> t) = case t of Term f2pow -> term_ f2pow
 
 
 -- | return all possible divisors of a term.
@@ -109,3 +116,17 @@ instance Exprable Term where
 instance Exprable Factor where
   toExpr f = Expr [toTerm f]
 
+expradd :: Expr -> Expr -> Expr
+expradd (Expr e) (Expr e') = Expr (e <> e')
+
+exprsub :: Expr -> Expr -> Expr
+exprsub (Expr e) (Expr e') = Expr (e <> (map (* (-1)) e'))
+
+exprmul :: Expr -> Expr -> Expr
+exprmul (Expr e) (Expr e') = liftA2 multerm_ e e' |> Expr
+
+instance Num Expr where
+  fromInteger i = fromInteger i |> Number |> toExpr
+  (+) = expradd
+  (-) = exprsub
+  (*) = exprmul
