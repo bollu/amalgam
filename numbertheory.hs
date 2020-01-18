@@ -7,240 +7,105 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE OverlappingInstances #-}
 {-# LANGUAGE Rank2Types #-}
-import Prelude hiding ((^), (^^), (+), (-), (*), (/), ($))
+import Prelude hiding ((^^), (+), (/), ($))
 import qualified Data.Map as M
+import qualified Data.Set as S
 import qualified Data.List as L
+import Data.Foldable
+import Data.Traversable
+import Data.Monoid
 
--- symbolic prime
-data Prime = SymPrime String | Zero deriving(Eq, Ord)
+-- | this is stupid, but GHC.Num for some reason exposes sub but not add?
+add :: Num a => a -> a -> a
+add a b = a `subtract` (negate b)
 
-
-instance Show Prime where
-  show (SymPrime p) = p
-  show Zero = "0"
-
-p, q, r :: Prime
-p = SymPrime "p"
-q = SymPrime "q"
-r = SymPrime "r"
-
-type PrimePow = (Prime, Int)
-
-showPrimePow :: PrimePow -> String
-showPrimePow (p, 0) = show 1
-showPrimePow (p, 1) = show p
-showPrimePow (p, n) = show p <> "^" <> show n
-
-(^) :: Prime -> Int -> PrimePow
-(^) = (,)
-
--- return all divisors of a prime power
-primePowDivisors :: PrimePow -> [PrimePow]
-primePowDivisors (p, n) = [p ^ i | i <- [0..n]]
-
--- [(p, 1), (q, 2)]
--- [[(p, 0), (p, 1)], [(q, 0), (q, 1)]
--- [[a]] -> [[a]]
-prodList :: [[a]] -> [[a]]
-prodList [as] = map (\a -> [a]) as
-prodList (as:aas) = do
-  as' <- prodList aas
-  a <- as
-  return (a:as')
-
-data Sign = SignPositive | SignNegative deriving(Eq)
-
-instance Semigroup Sign where
-  SignNegative <> SignNegative = SignPositive
-  SignPositive <> s = s
-  s <> SignPositive = s
-
-instance Monoid Sign where
- mempty = SignPositive
-
-instance Show Sign where
-  show (SignPositive) = "+"
-  show (SignNegative) = "-"
-
-data Number = Number Sign [PrimePow] deriving(Eq)
-
--- | Empty product of primes
-one :: Number
-one = Number SignPositive []
-
-minusone :: Number
-minusone = Number SignNegative []
-
-zero :: Number
-zero = Number SignPositive [(Zero, 1)]
-
-instance Show Number where
-  show (Number SignPositive []) = show 1
-  show (Number SignNegative []) = show (-1)
-  show (Number SignPositive ps) = mconcat (map showPrimePow ps)
-  show (Number SignNegative ps) = "-" <> mconcat (map showPrimePow ps)
-
--- | smart constructor to eliminate redundancies
-number :: Number -> Number
-number (Number s pps) = 
-  let noones = [ (p, pow) |  (p, pow) <- pps, pow /= 0]
-      collectpow p = sum [pow | (p', pow) <- pps, p == p']
-      uniqprimes = L.nub [p | (p, _) <- noones]
-      haszero = any (\(p, _) -> p == Zero) pps
-  in if haszero
-      then zero
-      else Number s [(p, collectpow p) | p <- uniqprimes]
-
--- infixl 5 *
--- (*) :: (Numberable a, Numberable b) => a -> b -> Number
--- (*) (toNumber -> Number ps) (toNumber -> Number qs) = number (ps <> qs)
---
-numprod :: (Numberable a, Numberable b) => a -> b -> Number
-numprod (toNumber -> Number s1 ps) (toNumber -> Number s2 qs) = 
-  number (Number (s1 <> s2) (ps <> qs))
-
-
-numdiv :: (Numberable a, Numberable b) => a -> b -> Number
-numdiv (toNumber -> Number s1 xs) (toNumber -> Number s2 ys) = 
- let primes = L.nub [p | (p, _) <- xs <> ys]
- in Number (s1 <> s2) [ case (lookup p xs, lookup p ys) of 
-                                (Just xpow, Just ypow) ->  (p, xpow `subtract` ypow)
-                                (Just xpow, Nothing) ->  (p, xpow)
-                                (Nothing, Just ypow) ->  (p, negate ypow)
-                                (Nothing, Nothing) -> error "prime must be in one"
-                      | p <- primes]
-   
-
--- return all divisors of a number. Do this by collecting all divisors
--- of all prime powers and then take all combinations.
-divisors :: Number -> [Number]
-divisors (Number s pps) = 
-  map (\ps -> number (Number s ps)) (prodList (map primePowDivisors pps))
-
-class Numberable a where
-  toNumber :: a -> Number
-
-instance Numberable Number where
-  toNumber = id
-
-instance Numberable Prime where
-  toNumber p = Number SignPositive [p^1]
-
-instance Numberable PrimePow where
-  toNumber p = Number SignPositive [p]
-
+infixl 0 |>
+(|>) :: x -> (x -> y) -> y
+(|>) x f = f x 
 
 type FnName = String
 
--- | evaluate a FnName at a number
-data Expr = 
-  ExprUninterpretedFn FnName Expr 
-  | ExprAdd Expr Expr
-  | ExprDiv Expr Expr
-  | ExprMul Expr Expr
-  | ExprNum Number
-  deriving(Eq)
+-- | factors contain symbolic primes, regular numbers, and uninterpreted functions.
+data Factor = Number Int | SymPrime String | SymFn FnName Expr deriving(Eq, Ord)
+-- | terms are products of factors of different powers
+data Term = Term (M.Map Factor Int) deriving(Eq, Ord)
+-- | Expressions are sums of terms
+data Expr = Expr [Term] deriving (Eq, Ord)
+
+-- | take the product of two terms.
+multerm :: Term -> Term -> Term
+multerm (Term t1) (Term t2) =
+  (M.mergeWithKey 
+    (\f a b -> if a `add` b == 0 then Nothing else Just (a `add` b)) -- both
+    id id t1 t2) |> Term
+
+instance Show Factor where
+  show (SymPrime n) = n
+  show (Number i ) = show i
+  show (SymFn n e) = n <> "(" <> show e <> ")"
+
+instance Show Term where
+  show (Term t) = 
+    let ns = M.filter (>= 0) t
+        ds = M.filter (< 0) t
+        -- | show a power of a factor. Normalize powers since we are showing
+        -- denominator using / (...)
+        showfac f (abs -> 1) = show f
+        showfac f n = show f <> "^" <> show (abs n)
+        -- | numerator & denominator 
+        shown = if M.null ns then "1" else (M.foldMapWithKey showfac ns)
+        showd = if M.null ds then [] else "/" <> (M.foldMapWithKey showfac ds) 
+    in  "("  <>  shown <> showd <> ")"
+
+instance Show Expr where
+ show (Expr ts) = L.intercalate "+" (map show ts)
+
+-- | construct and normalize a term
+term_ :: M.Map Factor Int -> Term
+term_ t = 
+  let numbers = M.filterWithKey (\f _ -> case f of Number _ -> True; _ -> False) t
+      nonumbers = M.filterWithKey (\f _ -> case f of Number _ -> False; _ -> True) t
+      (Product numprod) = M.foldMapWithKey (\(Number n) pow -> Product (n ^ pow)) numbers
+  in nonumbers |> M.insert (Number numprod) 1 |> Term
+
+
+-- | return all possible divisors of a term.
+divisors_ :: Term -> S.Set Term
+divisors_ (Term f2pow) = 
+  f2pow |> M.map (\pow -> [0..pow]) |> sequenceA |> map term_ |> S.fromList
+
+divisors :: Exprable a => a -> S.Set Term
+divisors (toExpr -> e) = toTerm e |> divisors_
+
+one_ :: Factor
+one_ = Number 1
+
+one :: Expr
+one = toExpr one_
+
+class Termable a where
+  toTerm :: a -> Term
+
+instance Termable Factor where
+  toTerm f = M.singleton f 1 |> Term
+
+instance Termable Term where
+  toTerm t = t
+
+instance Termable Expr where
+  toTerm (Expr [t]) = t
+  toTerm e = 
+    error ("unable to convert expression to term: |" <> show e <> "|")
 
 class Exprable a where
   toExpr :: a -> Expr
 
-{-# OVERLAPPLING #-}
-instance Numberable a => Exprable a where
-  toExpr = ExprNum . toNumber
-
-{-# OVERLAPPED #-}
 instance Exprable Expr where
   toExpr = id
 
-($) :: Exprable  a => FnName -> a -> Expr
-f $ a = ExprUninterpretedFn f (toExpr a)
+instance Exprable Term where
+  toExpr t = Expr [t]
 
--- | Convention: keep numbers to the left
-(+) :: (Exprable a, Exprable b) => a -> b -> Expr
-a + b = case (toExpr a, toExpr b) of
-             (ExprNum na, b) -> if iszero na then b else ExprAdd (ExprNum na) b
-             (a, ExprNum nb) -> if iszero nb then a else ExprAdd (ExprNum nb) a
-             (a, b) -> ExprAdd a b
+instance Exprable Factor where
+  toExpr f = Expr [toTerm f]
 
-(-) :: (Exprable a, Exprable b) => a -> b -> Expr
-a - b = ExprAdd (toExpr a) (minusone * (toExpr b))
-
-(*) :: (Exprable a, Exprable b) => a -> b -> Expr
-a * b = case (toExpr a, toExpr b) of
-          (ExprNum a, ExprNum b) -> ExprNum (numprod a b)
-          (ExprNum a, b) -> ExprMul (ExprNum a) b
-          (a, ExprNum b) -> ExprMul (ExprNum b) a
-          (a, b) -> ExprMul a b
-
-(/) :: (Exprable a, Exprable b) => a -> b -> Expr
-a / b = case (toExpr a, toExpr b) of
-          (ExprNum a, ExprNum b) -> ExprNum (numdiv a b)
-          (ExprNum a, b) -> ExprDiv (ExprNum a) b
-          (a, ExprNum b) -> ExprDiv (ExprNum b) a
-          (a, b) -> ExprDiv a b
-
--- pull division out
-ne1 :: Expr -> Expr
-ne1 (ExprMul (ExprDiv a b) (ExprDiv x y)) = ExprDiv (ExprMul a b) (ExprMul x y)
-ne1 (ExprMul a (ExprDiv b c)) = ExprDiv (ExprMul a b) c
-ne1 (ExprMul (ExprDiv a b) c) = ExprDiv (ExprMul a c) b
-ne1 (ExprMul a b) = ExprMul (ne1 a) (ne1 b)
-ne1 (ExprDiv a b) = ExprDiv (ne1 a) (ne1 b)
-ne1 (ExprAdd a b) = ExprAdd (ne1 a) (ne1 b)
-ne1 x = x
-
-normalizeExpr :: Expr -> Expr
-normalizeExpr e = 
-  let e1 = ne1 e
-  in if e1 == e then e else normalizeExpr e1
-
-
-instance Show Expr where
-  show (ExprUninterpretedFn f n) = f <> "(" <> show n <> ")"
-  show (ExprAdd a b) = show a <> " + " <> show b
-  show (ExprMul a b) = show a <> show b
-  show (ExprDiv a b) = "(" <> show a <> "/" <> show b <> ")"
-  show (ExprNum n) = show n
-
-
-isone :: Number -> Bool
-isone n = case n of Number _ [] -> True; _ -> False
-
-iszero :: Number -> Bool
-iszero n = case n of Number _ [(Zero, 1)] -> True; _ -> False
-
-sumExprs :: [Expr] -> Expr
-sumExprs [e] = e
-sumExprs (e:es) = e + (sumExprs es)
-
-prodExprs :: [Expr] -> Expr
-prodExprs [e] = e
-prodExprs (e:es) = e * (sumExprs es)
-
--- | an arithmetic function
-type ArithFn = Number -> Expr
-
-f :: ArithFn
-f n = "f" $  n
-
--- | compute the dirichlet inverse of the given FnName applied on a number
-dirchletInv :: ArithFn -> ArithFn
-dirchletInv f n = 
-  if isone n
-  then one / (f  one)
-  else sumExprs [(minusone / (f one)) * f (n `numdiv` d) * (dirchletInv f d)| d <- divisors n, d /= n]
-
--- I (i) = 1 if i == 1, 0 otherwise
-identity :: ArithFn
-identity n = if isone n then ExprNum one else ExprNum zero
-
--- n(i) = i
-n :: ArithFn
-n i = ExprNum i
-
--- | compute the dirichlet convolution of a function against another
-dirchletConv :: ArithFn -> ArithFn -> ArithFn
-dirchletConv f g n = sumExprs [  (f  (n `numdiv` d)) * (g  d) | d <- divisors n]
-
-main :: IO ()
-main = print ""
